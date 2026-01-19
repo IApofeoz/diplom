@@ -13,7 +13,7 @@ from database import engine, get_db
 # Секретный ключ для подписи токенов (в реальном проекте хранить в .env!)
 SECRET_KEY = "super-secret-key-change-me"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30*7*2
+ACCESS_TOKEN_EXPIRE_MINUTES = 30*7*2*24
 
 # Схема авторизации
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
