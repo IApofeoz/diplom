@@ -1,0 +1,21 @@
+@import './base.css';
+
+:root {
+  /* Палитра цветов */
+  --color-primary: #00d9ff;       /* Основной неон */
+  --color-primary-dark: #0080ff;  /* Темно-синий для градиентов */
+  --color-text-main: #e0e0e0;
+  --color-text-muted: #a0a0c0;
+  --color-bg-card: rgba(20, 25, 40, 0.85);
+  
+  /* Эффекты */
+  --shadow-glow: 0 0 15px rgba(0, 217, 255, 0.7);
+  --border-radius: 16px;
+}
+
+/* Глобальные утилиты (можно использовать в любом компоненте) */
+.flex-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}

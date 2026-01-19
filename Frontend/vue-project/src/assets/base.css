@@ -1,0 +1,28 @@
+/* сброс и база */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  /* Перенесли цвета фона и текста сюда, чтобы они были на всем сайте */
+  background-color: #0a0e17;
+  color: #e0e0e0;
+  font-family: 'Segoe UI', 'Arial', sans-serif;
+  line-height: 1.6;
+  overflow-x: hidden; /* Чтобы анимации не вызывали скролл */
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+  transition: color 0.3s;
+}
+
+button {
+  border: none;
+  background: none;
+  font-family: inherit;
+}
