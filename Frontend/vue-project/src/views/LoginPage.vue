@@ -93,7 +93,7 @@ onUnmounted(() => { cancelAnimationFrame(animationFrameId); window.removeEventLi
               <input type="checkbox" id="remember">
               <label for="remember">Запомнить меня</label>
             </div>
-            <a href="#" @click.prevent="showNotImplemented('Восстановление')" class="forgot-password">Забыли пароль?</a>
+            <RouterLink to="/forgot-password" class="forgot-password">Забыли пароль?</RouterLink>
           </div>
           
           <button type="submit" class="auth-button" :style="btnStyle" :disabled="isLoading">

@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr
+import secrets
+from datetime import datetime, timedelta
 
 import models, schemas
 from database import engine, get_db
@@ -97,3 +99,56 @@ def login(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
     access_token = create_access_token(data={"sub": user.email})
     
     return {"access_token": access_token, "token_type": "bearer"}
+
+# 1. ЗАПРОС СБРОСА (Генерация ссылки)
+@app.post("/forgot-password")
+def forgot_password(payload: schemas.PasswordResetRequest, db: Session = Depends(get_db)):
+    # Ищем пользователя
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    
+    # Если юзера нет, мы все равно говорим "Письмо отправлено", чтобы не выдавать базу хакерам
+    if not user:
+        return {"message": "Если такой email существует, мы отправили инструкцию."}
+
+    # Генерируем токен и время жизни (15 минут)
+    token = secrets.token_urlsafe(32)
+    expires = datetime.utcnow() + timedelta(minutes=15)
+
+    user.reset_token = token
+    user.reset_token_expires = expires
+    db.commit()
+
+    # --- ЭМУЛЯЦИЯ ОТПРАВКИ ПИСЬМА ---
+    reset_link = f"http://localhost:5173/reset-password?token={token}"
+    print("\n" + "="*50)
+    print(f"📧 ПИСЬМО ДЛЯ СБРОСА ПАРОЛЯ:")
+    print(f"Ссылка: {reset_link}")
+    print("="*50 + "\n")
+    # --------------------------------
+
+    return {"message": "Ссылка для сброса отправлена (смотри консоль сервера)"}
+
+
+# 2. УСТАНОВКА НОВОГО ПАРОЛЯ
+@app.post("/reset-password")
+def reset_password(payload: schemas.PasswordResetConfirm, db: Session = Depends(get_db)):
+    # Ищем пользователя по токену
+    user = db.query(models.User).filter(models.User.reset_token == payload.token).first()
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Неверный или использованный токен")
+
+    # Проверяем срок действия
+    if user.reset_token_expires < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Срок действия ссылки истек")
+
+    # Меняем пароль
+    user.hashed_password = get_password_hash(payload.new_password)
+    
+    # Очищаем токен, чтобы ссылку нельзя было использовать повторно
+    user.reset_token = None
+    user.reset_token_expires = None
+    
+    db.commit()
+
+    return {"message": "Пароль успешно изменен"}

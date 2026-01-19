@@ -10,3 +10,5 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
