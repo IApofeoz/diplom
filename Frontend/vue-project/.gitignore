@@ -34,3 +34,18 @@ coverage
 
 # Vitest
 __screenshots__/
+
+
+# Игнорируем кэш питона (мусор)
+__pycache__/
+*.pyc
+
+# Игнорируем библиотеки виртуального окружения
+Backend/venv/Lib/
+Backend/venv/Scripts/
+Backend/venv/Include/
+Backend/venv/pyvenv.cfg
+
+# Игнорируем папки библиотек Vue
+Frontend/vue-project/node_modules/
+

@@ -10,7 +10,8 @@ const router = createRouter({
     {
       path: '/',           // 2. Главный путь
       name: 'login',
-      component: LoginPage // 3. Компонент входа
+      component: LoginPage, // 3. Компонент входа
+      meta: { title: 'Вход | Messenger' }
     },
         {
       path: '/register',
@@ -27,6 +28,13 @@ const router = createRouter({
     { path: '/forgot-password', component: ForgotPassword },
     { path: '/reset-password', component: ResetPassword }
   ]
+})
+
+// ДОБАВЬТЕ ЭТОТ БЛОК ПЕРЕД export default router
+router.beforeEach((to, from, next) => {
+  // Если у роута есть title, ставим его, иначе дефолтный
+  document.title = to.meta.title || 'Messenger'
+  next()
 })
 
 export default router

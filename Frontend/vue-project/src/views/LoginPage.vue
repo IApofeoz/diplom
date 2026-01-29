@@ -30,7 +30,7 @@ const handleLogin = async () => {
     console.log('Успешный вход:', response.data)
     
     // Сохраняем токен
-    localStorage.setItem('token', response.data.access_token)
+    localStorage.setItem('access_token', response.data.access_token)
     
     btnText.value = 'Успешный вход!'
     btnStyle.value = { background: 'linear-gradient(90deg, #00ff88, #00cc66)' }
