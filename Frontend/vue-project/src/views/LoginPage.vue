@@ -71,7 +71,7 @@ onUnmounted(() => { cancelAnimationFrame(animationFrameId); window.removeEventLi
         <div class="logo">
           <i class="fas fa-user-astronaut"></i>
           <h1>FUTURE AUTH</h1>
-          <p>Вход в систему нового поколения</p>
+          <p>Вход в Messenger</p>
         </div>
         
         <form @submit.prevent="handleLogin">
