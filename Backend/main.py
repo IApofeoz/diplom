@@ -1,30 +1,44 @@
-from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
-from passlib.context import CryptContext
-from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt
-from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel, EmailStr
-from datetime import datetime, timedelta
-from fastapi.staticfiles import StaticFiles
-from fastapi import UploadFile, File        
-
+import os
 import secrets
-import models, schemas
+import shutil
+import uuid
+from datetime import datetime, timedelta
+
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
+from fastapi.staticfiles import StaticFiles
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel
+from sqlalchemy import or_, and_
+from sqlalchemy.orm import Session
+
+# Локальные модули
+import models
+import schemas
 from database import engine, get_db
 
 # --- КОНФИГУРАЦИЯ ---
 SECRET_KEY = "super-secret-key-change-me"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 7  # 1 неделя
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 7 
 
-# Создаем таблицы (в продакшене лучше использовать Alembic)
+os.makedirs("static/uploads", exist_ok=True)
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,13 +47,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- БЕЗОПАСНОСТЬ ---
-pwd_context = CryptContext(
-    schemes=["argon2"],
-    deprecated="auto",
-    argon2__type="id"
-)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto", argon2__type="id")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 def get_password_hash(password):
@@ -52,7 +62,6 @@ def create_access_token(data: dict):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-# Зависимость для получения текущего пользователя
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -72,42 +81,30 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# --- WEBSOCKET MANAGER ---
 class ConnectionManager:
     def __init__(self):
-        # Храним: user_id -> [WebSocket1, WebSocket2] (поддержка нескольких вкладок)
         self.active_connections: dict[int, list[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, user_id: int):
         await websocket.accept()
-        
-        # Проверяем, был ли юзер онлайн ДО этого подключения
         was_offline = user_id not in self.active_connections
-        
         if was_offline:
             self.active_connections[user_id] = []
-            
         self.active_connections[user_id].append(websocket)
-        
-        # Если юзер только что появился в сети — оповещаем всех
         if was_offline:
             await self.broadcast_status(user_id, "online")
 
     def disconnect(self, websocket: WebSocket, user_id: int):
-        """Возвращает True, если пользователь полностью отключился (стал оффлайн)"""
         if user_id in self.active_connections:
             if websocket in self.active_connections[user_id]:
                 self.active_connections[user_id].remove(websocket)
-            
-            # Если у пользователя больше нет активных соединений
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
-                return True # Стал оффлайн
+                return True 
         return False
 
     async def send_personal_message(self, message: dict, user_id: int):
         if user_id in self.active_connections:
-            # Отправляем во все открытые вкладки пользователя
             for connection in self.active_connections[user_id]:
                 try:
                     await connection.send_json(message)
@@ -115,13 +112,7 @@ class ConnectionManager:
                     pass
     
     async def broadcast_status(self, user_id: int, status: str):
-        """Рассылает всем подключенным пользователям уведомление о смене статуса"""
-        message = {
-            "type": "status_update",
-            "user_id": user_id,
-            "status": status
-        }
-        # Итерируемся по копии ключей, чтобы избежать ошибки изменения словаря во время итерации
+        message = {"type": "status_update", "user_id": user_id, "status": status}
         for uid, sockets in list(self.active_connections.items()):
             for ws in sockets:
                 try:
@@ -131,29 +122,32 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-
-# --- МОДЕЛИ ОТВЕТОВ (Pydantic) для токена ---
 class Token(BaseModel):
     access_token: str
     token_type: str
 
-# --- ЭНДПОИНТЫ: AUTH ---
+# --- ЭНДПОИНТЫ ---
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    file_extension = file.filename.split(".")[-1]
+    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    file_path = f"static/uploads/{unique_filename}"
+    
+    with open(file_path, "wb+") as file_object:
+        shutil.copyfileobj(file.file, file_object)
+        
+    return {"url": f"http://localhost:8000/{file_path}"}
 
 @app.post("/register", response_model=schemas.UserOut)
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if db.query(models.User).filter(models.User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    
     if db.query(models.User).filter(models.User.username == user.username).first():
         raise HTTPException(status_code=400, detail="Username already taken")
 
     hashed_pw = get_password_hash(user.password)
-    new_user = models.User(
-        email=user.email,
-        username=user.username,
-        hashed_password=hashed_pw
-    )
-    
+    new_user = models.User(email=user.email, username=user.username, hashed_password=hashed_pw)
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
@@ -168,42 +162,9 @@ def login(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.post("/forgot-password")
-def forgot_password(payload: schemas.PasswordResetRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == payload.email).first()
-    if not user:
-        return {"message": "Instruction sent if email exists"}
-
-    token = secrets.token_urlsafe(32)
-    expires = datetime.utcnow() + timedelta(minutes=15)
-
-    user.reset_token = token
-    user.reset_token_expires = expires
-    db.commit()
-
-    reset_link = f"http://localhost:5173/reset-password?token={token}"
-    print(f"\n📧 RESET LINK: {reset_link}\n")
-    return {"message": "Reset link sent (check console)"}
-
-@app.post("/reset-password")
-def reset_password(payload: schemas.PasswordResetConfirm, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.reset_token == payload.token).first()
-    if not user or user.reset_token_expires < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    user.hashed_password = get_password_hash(payload.new_password)
-    user.reset_token = None
-    user.reset_token_expires = None
-    db.commit()
-    return {"message": "Password updated"}
-
-# --- ЭНДПОИНТЫ: ЧАТ И ПОЛЬЗОВАТЕЛИ ---
-
 @app.get("/users/me", response_model=schemas.UserOut)
 def read_users_me(current_user: models.User = Depends(get_current_user)):
     return current_user
-
-# main.py
 
 @app.put("/users/me", response_model=schemas.UserOut)
 def update_user_me(
@@ -211,46 +172,32 @@ def update_user_me(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # 1. Смена юзернейма
     if user_update.username is not None:
-        # Убираем пробелы (на всякий случай)
         new_username = user_update.username.strip()
-        
-        # Если имя реально отличается от текущего
         if new_username != current_user.username:
-            # Проверяем занятость
-            existing_user = db.query(models.User).filter(models.User.username == new_username).first()
-            if existing_user:
+            existing = db.query(models.User).filter(models.User.username == new_username).first()
+            if existing:
                 raise HTTPException(status_code=400, detail="Имя пользователя уже занято")
-            
             current_user.username = new_username
 
-    # 2. Телефон
     if user_update.phone_number is not None:
-        if current_user.phone_number != user_update.phone_number:
-            current_user.phone_number = user_update.phone_number
+        current_user.phone_number = user_update.phone_number
         
-    # 3. Дата рождения
     if user_update.birth_date is not None:
-        if current_user.birth_date != user_update.birth_date:
-            current_user.birth_date = user_update.birth_date
+        current_user.birth_date = user_update.birth_date
+    
+    if user_update.avatar_url is not None:
+        current_user.avatar_url = user_update.avatar_url
         
     db.commit()
     db.refresh(current_user)
     return current_user
 
-
 @app.get("/users", response_model=list[schemas.UserWithLastMessage])
-def get_users_with_last_message(
-    db: Session = Depends(get_db), 
-    current_user: models.User = Depends(get_current_user)
-):
-    # 1. Получаем всех пользователей (кроме себя)
+def get_users_with_last_message(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     users = db.query(models.User).filter(models.User.id != current_user.id).all()
-    
     result = []
     for user in users:
-        # 2. Ищем ПОСЛЕДНЕЕ сообщение
         last_msg = db.query(models.Message).filter(
             or_(
                 (models.Message.sender_id == current_user.id) & (models.Message.recipient_id == user.id),
@@ -258,48 +205,116 @@ def get_users_with_last_message(
             )
         ).order_by(models.Message.timestamp.desc()).first()
 
-        # 3. Формируем ответ, проверяя статус онлайн через manager
         result.append({
             "id": user.id,
             "username": user.username,
             "last_message": last_msg.content if last_msg else "Начните общение",
             "last_message_time": last_msg.timestamp.isoformat() if last_msg else None,
+            "is_online": user.id in manager.active_connections,
+            "avatar_url": user.avatar_url,
+            "phone_number": user.phone_number,
+            "birth_date": user.birth_date
+        })
+    return result
+
+@app.get("/messages/{user_id}", response_model=list[schemas.MessageOut])
+def get_messages(user_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    messages = db.query(models.Message).filter(
+        or_(
+            and_(models.Message.sender_id == current_user.id, models.Message.recipient_id == user_id),
+            and_(models.Message.sender_id == user_id, models.Message.recipient_id == current_user.id)
+        )
+    ).order_by(models.Message.timestamp.asc()).all()
+
+    # Формируем ответ вручную, чтобы заполнить данные о цитате
+    result = []
+    for msg in messages:
+        reply_data = None
+        if msg.reply_to:
+            # Находим автора того сообщения, на которое ответили
+            sender = db.query(models.User).filter(models.User.id == msg.reply_to.sender_id).first()
+            reply_data = {
+                "id": msg.reply_to.id,
+                "content": msg.reply_to.content,
+                "sender_username": sender.username if sender else "Unknown"
+            }
             
-            # НОВОЕ ПОЛЕ: true, если id пользователя есть в списке активных подключений
-            "is_online": user.id in manager.active_connections 
+        result.append({
+            "id": msg.id,
+            "sender_id": msg.sender_id,
+            "recipient_id": msg.recipient_id,
+            "content": msg.content,
+            "timestamp": msg.timestamp,
+            "is_read": msg.is_read,
+            "is_encrypted": msg.is_encrypted,
+            "reply_to": reply_data
+        })
+        
+    return result
+
+@app.get("/users/search", response_model=list[schemas.UserOut])
+def search_users(q: str = Query(..., min_length=1), db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Ищем пользователей по username или email (регистронезависимо через ilike)
+    # Используем current_user.id != models.User.id, чтобы не находить самого себя
+    users = db.query(models.User).filter(
+        and_(
+            models.User.id != current_user.id,
+            or_(
+                models.User.username.ilike(f"%{q}%"), # ilike - case insensitive search в Postgres
+                models.User.email.ilike(f"%{q}%")
+            )
+        )
+    ).all()
+    
+    return users
+
+@app.get("/messages/{contact_id}/search", response_model=list[schemas.MessageOut])
+def search_messages(
+    contact_id: int, 
+    q: str = Query(..., min_length=1), 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    # Ищем сообщения только между мной и контактом, содержащие текст запроса
+    messages = db.query(models.Message).filter(
+        and_(
+            models.Message.content.ilike(f"%{q}%"), # Поиск подстроки
+            or_(
+                and_(models.Message.sender_id == current_user.id, models.Message.recipient_id == contact_id),
+                and_(models.Message.sender_id == contact_id, models.Message.recipient_id == current_user.id)
+            )
+        )
+    ).order_by(models.Message.timestamp.desc()).all() # Сначала новые
+
+    # Формируем ответ вручную для цитат (та же логика, что в get_messages)
+    result = []
+    for msg in messages:
+        reply_data = None
+        if msg.reply_to_id and msg.reply_to:
+             sender = db.query(models.User).filter(models.User.id == msg.reply_to.sender_id).first()
+             reply_data = {
+                 "id": msg.reply_to.id,
+                 "content": msg.reply_to.content,
+                 "sender_username": sender.username if sender else "Unknown"
+             }
+        
+        result.append({
+            "id": msg.id,
+            "sender_id": msg.sender_id,
+            "recipient_id": msg.recipient_id,
+            "content": msg.content,
+            "timestamp": msg.timestamp,
+            "is_read": msg.is_read,
+            "is_encrypted": msg.is_encrypted,
+            "reply_to": reply_data
         })
         
     return result
 
 
-@app.get("/messages/{contact_id}", response_model=list[schemas.MessageOut])
-def get_history(
-    contact_id: int, 
-    db: Session = Depends(get_db), 
-    current_user: models.User = Depends(get_current_user)
-):
-    """Возвращает историю переписки между текущим пользователем и contact_id"""
-    messages = db.query(models.Message).filter(
-        or_(
-            (models.Message.sender_id == current_user.id) & (models.Message.recipient_id == contact_id),
-            (models.Message.sender_id == contact_id) & (models.Message.recipient_id == current_user.id)
-        )
-    ).order_by(models.Message.timestamp.asc()).all()
-    
-    return messages
-
-# --- WEBSOCKET ENDPOINT ---
 @app.websocket("/ws")
-async def websocket_endpoint(
-    websocket: WebSocket, 
-    token: str = Query(...), 
-    db: Session = Depends(get_db)
-):
-    """
-    WebSocket endpoint. 
-    Токен передается через query-параметр: ws://host/ws?token=...
-    """
-    # 1. Валидация пользователя при подключении
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...), db: Session = Depends(get_db)):
+    # 1. Аутентификация
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
@@ -311,71 +326,103 @@ async def websocket_endpoint(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    # 2. Подключение (автоматически отправит "online", если юзер только зашел)
+    # 2. Подключение
     await manager.connect(websocket, user.id)
     
     try:
         while True:
-            # 3. Получение сообщения от клиента
             data = await websocket.receive_json()
+            msg_type = data.get("type")
             
-            # --- ЛОГИКА ПРОЧТЕНИЯ ---
-            if data.get("type") == "read_messages":
-                sender_id = data.get("sender_id")
-                
-                # Помечаем все сообщения ОТ sender_id ДЛЯ user.id как прочитанные
-                db.query(models.Message).filter(
-                    models.Message.sender_id == sender_id,
-                    models.Message.recipient_id == user.id,
-                    models.Message.is_read == False
-                ).update({"is_read": True})
-                db.commit()
-                
-                # Уведомляем отправителя (sender_id), что его сообщения прочитаны
-                await manager.send_personal_message({
-                    "type": "messages_read",
-                    "user_id": user.id  # Кто прочитал (Я)
-                }, sender_id)
+            # --- ЛОГИКА: СТАТУС ПЕЧАТИ ---
+            if msg_type == "typing":
+                recipient_id = data.get("recipient_id")
+                await manager.send_personal_message(
+                    {"type": "user_typing", "sender_id": user.id}, 
+                    recipient_id
+                )
                 continue
 
-            # --- ЛОГИКА ОТПРАВКИ СООБЩЕНИЯ ---
-            # Ожидаемый формат: {"recipient_id": 2, "content": "Привет"}
+            # --- ЛОГИКА: ПРОЧИТАНО ---
+            elif msg_type == "read_messages":
+                sender_id = data.get("sender_id")
+                db.query(models.Message).filter(models.Message.sender_id == sender_id, models.Message.recipient_id == user.id, models.Message.is_read == False).update({"is_read": True})
+                db.commit()
+                await manager.send_personal_message({"type": "messages_read", "user_id": user.id}, sender_id)
+                continue
+
+            # --- ЛОГИКА: УДАЛЕНИЕ ---
+            elif msg_type == "delete_message":
+                msg_id = data.get("message_id")
+                msg_to_delete = db.query(models.Message).filter(models.Message.id == msg_id).first()
+                if msg_to_delete and msg_to_delete.sender_id == user.id:
+                    recipient_id = msg_to_delete.recipient_id
+                    db.delete(msg_to_delete)
+                    db.commit()
+                    update_payload = {"type": "message_deleted", "id": msg_id}
+                    await manager.send_personal_message(update_payload, user.id)
+                    await manager.send_personal_message(update_payload, recipient_id)
+                continue
+
+            # --- ЛОГИКА: РЕДАКТИРОВАНИЕ ---
+            elif msg_type == "edit_message":
+                msg_id = data.get("message_id")
+                new_content = data.get("new_content")
+                msg_to_edit = db.query(models.Message).filter(models.Message.id == msg_id).first()
+                if msg_to_edit and msg_to_edit.sender_id == user.id and new_content:
+                    msg_to_edit.content = new_content
+                    db.commit()
+                    update_payload = {"type": "message_edited", "id": msg_id, "content": new_content}
+                    await manager.send_personal_message(update_payload, user.id)
+                    await manager.send_personal_message(update_payload, msg_to_edit.recipient_id)
+                continue
+
+            # --- ЛОГИКА: ОБЫЧНОЕ СООБЩЕНИЕ (С ОТВЕТОМ) ---
             recipient_id = data.get("recipient_id")
             content = data.get("content")
+            reply_to_id = data.get("reply_to_id") # <--- Получаем ID ответа
             
-            if not recipient_id or not content:
-                continue
+            if recipient_id and content:
+                new_msg = models.Message(
+                    sender_id=user.id, 
+                    recipient_id=recipient_id, 
+                    content=content, 
+                    is_read=False, 
+                    is_encrypted=False,
+                    reply_to_id=reply_to_id # <--- Сохраняем связь в БД
+                )
+                db.add(new_msg)
+                db.commit()
+                db.refresh(new_msg)
+                
+                # Подготовка данных о цитате (чтобы фронтенд мог её сразу отрисовать)
+                reply_data = None
+                if reply_to_id:
+                     replied_msg = db.query(models.Message).filter(models.Message.id == reply_to_id).first()
+                     if replied_msg:
+                         reply_sender = db.query(models.User).filter(models.User.id == replied_msg.sender_id).first()
+                         reply_data = {
+                             "id": replied_msg.id,
+                             "content": replied_msg.content,
+                             "sender_username": reply_sender.username if reply_sender else "Unknown"
+                         }
 
-            # 4. Сохранение в БД
-            new_msg = models.Message(
-                sender_id=user.id,
-                recipient_id=recipient_id,
-                content=content,
-                is_read=False,
-                is_encrypted=False 
-            )
-            db.add(new_msg)
-            db.commit()
-            db.refresh(new_msg)
-
-            # 5. Подготовка ответа (JSON)
-            msg_response = {
-                "type": "new_message",
-                "id": new_msg.id,
-                "sender_id": user.id,
-                "recipient_id": recipient_id,
-                "content": content,
-                "timestamp": new_msg.timestamp.isoformat(), 
-                "is_read": False,
-                "is_encrypted": False
-            }
-
-            # 6. Рассылка получателю и себе (для синхронизации)
-            await manager.send_personal_message(msg_response, recipient_id)
-            await manager.send_personal_message(msg_response, user.id)
+                msg_response = {
+                    "type": "new_message",
+                    "id": new_msg.id,
+                    "sender_id": user.id,
+                    "recipient_id": recipient_id,
+                    "content": content,
+                    "timestamp": new_msg.timestamp.isoformat(),
+                    "is_read": False,
+                    "is_encrypted": False,
+                    "reply_to": reply_data # <--- Отправляем объект цитаты клиенту
+                }
+                
+                await manager.send_personal_message(msg_response, recipient_id)
+                await manager.send_personal_message(msg_response, user.id)
 
     except WebSocketDisconnect:
-        # При отключении проверяем, стал ли юзер полностью оффлайн
         is_offline = manager.disconnect(websocket, user.id)
         if is_offline:
             await manager.broadcast_status(user.id, "offline")

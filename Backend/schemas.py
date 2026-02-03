@@ -12,6 +12,7 @@ class UserUpdate(BaseModel):
     username: str | None = None
     phone_number: str | None = None
     birth_date: date | None = None
+    avatar_url: str | None = None
 
 class UserOut(BaseModel):
     id: int
@@ -22,8 +23,7 @@ class UserOut(BaseModel):
     birth_date: date | None = None
 
     class Config:
-        from_attributes = True # В Pydantic v2 это заменило orm_mode = True
-        # Если у вас старый Pydantic v1, оставьте orm_mode = True
+        from_attributes = True
 
 class UserWithLastMessage(BaseModel):
     id: int
@@ -46,11 +46,23 @@ class PasswordResetConfirm(BaseModel):
 
 # --- MESSAGES ---
 
+# 1. Схема для вложенного сообщения (на которое ответили)
+class MessageReply(BaseModel):
+    id: int
+    content: str
+    sender_username: str  # Имя того, кого цитируем
+
+    class Config:
+        from_attributes = True
+
+# 2. Обновленная схема создания (добавили reply_to_id)
 class MessageCreate(BaseModel):
     recipient_id: int
     content: str
     is_encrypted: bool = False
+    reply_to_id: int | None = None 
 
+# 3. Обновленная схема отображения (добавили reply_to)
 class MessageOut(BaseModel):
     id: int
     sender_id: int
@@ -59,6 +71,8 @@ class MessageOut(BaseModel):
     is_encrypted: bool
     timestamp: datetime
     is_read: bool
+    
+    reply_to: MessageReply | None = None # Вложенный объект
 
     class Config:
-        from_attributes = True # Или orm_mode = True для Pydantic v1
+        from_attributes = True
